@@ -88,16 +88,36 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            // Production signing configuration
+            // To use: Create a keystore file and set these environment variables:
+            // - MYAPP_RELEASE_STORE_FILE=your-release-key.keystore
+            // - MYAPP_RELEASE_KEY_ALIAS=your-key-alias
+            // - MYAPP_RELEASE_STORE_PASSWORD=your-store-password
+            // - MYAPP_RELEASE_KEY_PASSWORD=your-key-password
+            if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
+                storeFile file(MYAPP_RELEASE_STORE_FILE)
+                storePassword MYAPP_RELEASE_STORE_PASSWORD
+                keyAlias MYAPP_RELEASE_KEY_ALIAS
+                keyPassword MYAPP_RELEASE_KEY_PASSWORD
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Use release signing config if available, otherwise fall back to debug
+            if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+                println "⚠️  WARNING: Using debug keystore for release build!"
+                println "⚠️  Create a release keystore for production builds."
+            }
             minifyEnabled enableProguardInReleaseBuilds
+            shrinkResources enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }

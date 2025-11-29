@@ -4,15 +4,21 @@ export function notFound(req, res, next) {
   next(error);
 }
 
+import logger from '../utils/logger.js';
+
 export function errorHandler(err, req, res, next) {
   const statusCode = err.status || err.statusCode || 500;
   const message = err.message || 'Internal Server Error';
 
-  console.error('Error:', {
+  // Log error with context
+  logger.error('Request error', {
     message: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    stack: err.stack,
     url: req.originalUrl,
     method: req.method,
+    statusCode,
+    userId: req.user?.user_id,
+    ip: req.ip,
   });
 
   res.status(statusCode).json({

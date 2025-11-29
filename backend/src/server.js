@@ -3,9 +3,11 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
-import dotenv from 'dotenv';
 import { createServer } from 'http';
 
+// Import config first to validate environment variables
+import config from './config/env.js';
+import logger from './utils/logger.js';
 import { connectDatabase } from './database/connection.js';
 import { connectRedis } from './services/redis.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
@@ -21,31 +23,75 @@ import analyticsRoutes from './routes/analytics.js';
 import batchRoutes from './routes/batch.js';
 import usersRoutes from './routes/users.js';
 
-dotenv.config();
-
 const app = express();
 const httpServer = createServer(app);
-const PORT = process.env.PORT || 3000;
-const API_VERSION = process.env.API_VERSION || 'v1';
+const PORT = config.port;
+const API_VERSION = config.apiVersion;
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+}));
+
+// CORS configuration - support multiple origins for production
+const allowedOrigins = config.frontend.url 
+  ? config.frontend.url.split(',').map(url => url.trim())
+  : ['http://localhost:3001'];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3001',
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin) || config.nodeEnv === 'development') {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  const health = {
+    status: 'ok',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    version: process.env.npm_package_version || '1.0.0',
+  };
+
+  // Check database connection
+  try {
+    const pool = await import('./database/connection.js');
+    const client = await pool.default.connect();
+    client.release();
+    health.database = 'connected';
+  } catch (error) {
+    health.database = 'disconnected';
+    health.status = 'degraded';
+  }
+
+  // Check Redis connection
+  try {
+    const redis = await import('./services/redis.js');
+    const redisClient = redis.getRedisClient();
+    await redisClient.ping();
+    health.redis = 'connected';
+  } catch (error) {
+    health.redis = 'disconnected';
+    health.status = 'degraded';
+  }
+
+  const statusCode = health.status === 'ok' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
 // API Routes
@@ -65,40 +111,43 @@ app.use(errorHandler);
 // Initialize connections and start server
 async function startServer() {
   try {
+    // Create logs directory if it doesn't exist (for production)
+    if (config.nodeEnv === 'production') {
+      const fs = await import('fs');
+      const path = await import('path');
+      const logsDir = path.join(process.cwd(), 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+    }
+
     await connectDatabase();
-    console.log('✅ Database connected');
+    logger.info('Database connected successfully');
     
     await connectRedis();
-    console.log('✅ Redis connected');
+    logger.info('Redis connected successfully');
     
     httpServer.on('error', (error) => {
       if (error.code === 'EADDRINUSE') {
-        console.error('');
-        console.error('❌ Port 3000 is already in use!');
-        console.error('');
-        console.error('This usually means the server is already running.');
-        console.error('');
-        console.error('Solutions:');
-        console.error('  1. Check if another instance is running: http://localhost:3000/health');
-        console.error('  2. Kill the process using port 3000:');
-        console.error('     Windows: netstat -ano | findstr :3000');
-        console.error('     Then: taskkill /PID <PID> /F');
-        console.error('  3. Or use a different port by setting PORT in .env');
-        console.error('');
-        console.error('Nodemon will automatically restart when the port becomes available.');
+        logger.error(`Port ${PORT} is already in use`, { error: error.message });
+        logger.error('Solutions: Check if another instance is running, kill the process, or use a different port');
         process.exit(1);
       } else {
-        console.error('❌ Server error:', error);
+        logger.error('Server error', { error: error.message, stack: error.stack });
         process.exit(1);
       }
     });
     
     httpServer.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📡 API available at http://localhost:${PORT}/api/${API_VERSION}`);
+      logger.info(`Server started successfully`, {
+        port: PORT,
+        environment: config.nodeEnv,
+        apiVersion: API_VERSION,
+        apiUrl: `http://localhost:${PORT}/api/${API_VERSION}`,
+      });
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    logger.error('Failed to start server', { error: error.message, stack: error.stack });
     process.exit(1);
   }
 }
